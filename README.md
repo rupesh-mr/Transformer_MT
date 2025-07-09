@@ -30,6 +30,7 @@ from within the respective version folder:
 - `DenseTransformer/`
 - `TransformerWithRoPE/`
 - `TransformerWithMoE/`
+
 Default is 5 epochs but it can changed in the model_train function
 ---
 
