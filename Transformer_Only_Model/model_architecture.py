@@ -6,8 +6,7 @@ class TransformerModel(nn.Module):
                  num_encoder_layers, num_decoder_layers, dim_feedforward, dropout):
         super().__init__()
 
-        self.src_embed = nn.Embedding(src_vocab_size, d_model)
-        self.tgt_embed = nn.Embedding(tgt_vocab_size, d_model)
+        self.shared_embed = nn.Embedding(src_vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         self.pos_decoder = PositionalEncoding(d_model, dropout)
         
@@ -35,15 +34,14 @@ class TransformerModel(nn.Module):
             tgt_mask = pad_mask & (~causal)
 
         # Embed tokens
-        src = self.src_embed(src)  # [B, S, D]
-        tgt = self.tgt_embed(tgt)  # [B, T, D]
+        src = self.shared_embed(src)  # [B, S, D]
+        tgt = self.shared_embed(tgt)  # [B, T, D]
         src = self.pos_encoder(src)
         tgt = self.pos_decoder(tgt)
 
-        total_lb_loss=0.0
         # Encode
         for layer in self.encoder_layers:
-            src= layer(src, src_mask)
+            src = layer(src, src_mask)
 
         # Decode
         for layer in self.decoder_layers:
