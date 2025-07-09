@@ -12,17 +12,10 @@ def compute_rdrop_loss(model, src, tgt_input, tgt_output, src_mask, tgt_mask, al
     lambda_lb= 0.1
     # Average the load balance losses
     load_balance_loss = (lb_loss1 + lb_loss2) / 2
-
-    # Flatten for CE loss
-    # B, T, V = logits_1.size()
-    # logits_1_flat = logits_1.reshape(B * T, V)
-    # logits_2_flat = logits_2.reshape(B * T, V)
-    # tgt_output_flat = tgt_output.reshape(B * T)
     
-    B, T, V = logits_1.size()       # changes 1 vikas has done as per the previous file
+    B, T, V = logits_1.size()       
     logits_1_flat = logits_1.view(B * T, V)
     logits_2_flat = logits_2.view(B * T, V)
-    #tgt_output_flat = tgt_output.view(B * T)
     tgt_output_flat = tgt_output.reshape(-1)
 
     # Cross-entropy loss for both outputs
@@ -32,17 +25,12 @@ def compute_rdrop_loss(model, src, tgt_input, tgt_output, src_mask, tgt_mask, al
 
     # Compute KL divergence only on non-pad positions
     log_probs_1 = F.log_softmax(logits_1, dim=-1)  # (B, T, V)
-    log_probs_2 = F.log_softmax(logits_2, dim=-1)
-    #probs_1 = F.softmax(logits_1, dim=-1)
-    #probs_2 = F.softmax(logits_2, dim=-1)
-    
+    log_probs_2 = F.log_softmax(logits_2, dim=-1)    
 
     # Per-token KL divergence (B, T)
     
     kl_1 = F.kl_div(log_probs_1, log_probs_2, reduction='none', log_target=True).sum(-1)
     kl_2 = F.kl_div(log_probs_2, log_probs_1, reduction='none', log_target=True).sum(-1)
-    #kl_1 = F.kl_div(log_probs_1, probs_2, reduction='none').sum(-1)  # (B, T)
-    #kl_2 = F.kl_div(log_probs_2, probs_1, reduction='none').sum(-1)
 
     # Mask out padding
     non_pad_mask = (tgt_output != ignore_index).float()  # (B, T)
@@ -74,17 +62,7 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
             src_mask   = src_mask.to(device)
             tgt_mask   = tgt_mask.to(device)
 
-            #logits = model(src, tgt_input, src_mask=src_mask, tgt_mask=tgt_mask)
-            #B, Tm1, V = logits.size()
-            # assert tgt_output.min() >= 0 and tgt_output.max() < V, (
-            #     f"Target out of range: got [{tgt_output.min()}, {tgt_output.max()}], "
-            #     f"but vocab size is {V}"
-            # )
 
-
-            # with torch.no_grad():
-            #     lmin, lmax = logits.min().item(), logits.max().item()
-            #     assert torch.isfinite(logits).all(), f"Non-finite logits detected: [{lmin}, {lmax}]"
             # Compute loss with R-Drop
             loss = compute_rdrop_loss(model, src, tgt_input,tgt_output, src_mask, tgt_mask, alpha=5.0)
             # Backprop
@@ -95,7 +73,7 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
             optimizer.step()
             scheduler.step()
             
-            print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}") #here i put according to previous
+            print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}")
             
             batch_end = time.time()
             batch_time = batch_end - batch_start
@@ -131,19 +109,6 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
             }, checkpoint_path+'_'+str(epoch)+'.pth')
             print(f"Checkpoint saved to {checkpoint_path+'_'+str(epoch)+'.pth'}")
 
-        #if checkpoint_path:
-            #import os
-            #dir=os.path.dirname(checkpoint_path+"")
-            #if dir:
-             #os.makedirs(dir, exist_ok=True)
-            #torch.save({
-               # 'epoch': epoch,
-               # 'model_state_dict': model.state_dict(),
-              #  'optimizer_state_dict': optimizer.state_dict(),
-              #  'scheduler_state_dict': scheduler.state_dict(),
-             #   'loss': loss.item()
-            #}, checkpoint_path + '_' + str(epoch) +' .pth')
-          # print(f"Checkpoint saved to {checkpoint_path + '_' + str(epoch)+ '.pth'}")
         # Validation
         model.eval()
         total_valid_loss = 0
@@ -160,15 +125,15 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
                 tgt_mask   = tgt_mask.to(device)
 
                 logits,total_lb_loss = model(src, tgt_input, src_mask=src_mask, tgt_mask=tgt_mask)
-                loss = criterion(logits.reshape(-1, logits.size(-1)), tgt_output.reshape(-1))   # logits.size(-1) as logits.size()
+                loss = criterion(logits.reshape(-1, logits.size(-1)), tgt_output.reshape(-1))   
                 total_valid_loss += loss.item()
         avg_valid_loss = total_valid_loss / len(valid_dataloader)
-        print(f"Validation Loss after Epoch {epoch}: {avg_valid_loss:.4f}") #this uncomment
+        print(f"Validation Loss after Epoch {epoch}: {avg_valid_loss:.4f}") 
         with open('validation_log.txt', 'a') as log:
             log.write(f"Validation Loss after Epoch {epoch}: {avg_valid_loss:.4f}\n")
-            # log.write(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}\n") #this extra chnages
+           
             
-        print(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}") # extra put
+        print(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}") 
 # Function to load checkpoint
 def load_checkpoint(model, optimizer,scheduler, checkpoint_path):
     checkpoint = torch.load(checkpoint_path)

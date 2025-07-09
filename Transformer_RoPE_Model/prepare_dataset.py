@@ -5,6 +5,11 @@ import sentencepiece as spm
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
+
+
+
+src_lang = "eng_Latn"
+tgt_lang = "mni_Mtei"
 class TranslationDataset(Dataset):
     def __init__(self, csv_file, sp_model, src_col, tgt_col,isvalid=False,max_len=128, cache_file='tokenized_dataset.pt'):  #made the chnages here with max len 256 to 128 and put isvalid=False also
             self.cache_file = cache_file
@@ -15,22 +20,38 @@ class TranslationDataset(Dataset):
                 self.encoded_data = torch.load(cache_file)
                 print(f"Loaded {len(self.encoded_data)} samples.")
             else:
+                
                 print("Pre-tokenizing dataset...")
                 self.data = pd.read_csv(csv_file)
-                # self.data = self.data.loc[:900]
+                self.data = self.data
                 self.tokenizer = spm.SentencePieceProcessor(model_file=sp_model)
                 self.encoded_data = []
-
-                for i in range(len(self.data)):
+                for i in range(len(self.data)//2):
                     src_text = self.data.iloc[i][src_col]
                     tgt_text = self.data.iloc[i][tgt_col]
-
-                    src_ids = self.tokenizer.encode(src_text, out_type=int,add_bos=True, add_eos=True)[:self.max_len]
-                    tgt_ids = self.tokenizer.encode(tgt_text, out_type=int,add_bos=True, add_eos=True)[:self.max_len]
+            
+                    src_ids = self.tokenizer.encode(src_text, out_type=int, add_bos=True, add_eos=True)[:max_len]
+                    tgt_ids = self.tokenizer.encode(tgt_text, out_type=int, add_bos=True, add_eos=True)[:max_len]
+                    
+        
                     self.encoded_data.append((torch.tensor(src_ids), torch.tensor(tgt_ids)))
 
                     if i % 1000 == 0:
                         print(f"Tokenized {i} samples...")
+                for i in range(len(self.data)//2,len(self.data)):
+                    src_text = self.data.iloc[i][src_col]
+                    tgt_text = self.data.iloc[i][tgt_col]
+
+                
+                    src_ids = self.tokenizer.encode(src_text, out_type=int, add_bos=True, add_eos=True)[:max_len]
+                    tgt_ids = self.tokenizer.encode(tgt_text, out_type=int, add_bos=True, add_eos=True)[:max_len]
+             
+                    self.encoded_data.append((torch.tensor(src_ids), torch.tensor(tgt_ids)))
+
+                    if i % 1000 == 0:
+                        print(f"Tokenized {i} samples...")
+                       
+
 
                 torch.save(self.encoded_data, cache_file)
                 print(f"Tokenized dataset saved to: {cache_file}")

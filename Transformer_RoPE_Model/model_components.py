@@ -2,18 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-# class LoRALinear(nn.Module):
-#     def __init__(self, in_features, out_features, r=16, alpha=32):
-#         super().__init__()
-#         self.r = r
-#         self.alpha = alpha
-#         self.scale = alpha / r
-#         self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.02)
-#         self.A = nn.Parameter(torch.randn(r, in_features) * 0.02)
-#         self.B = nn.Parameter(torch.randn(out_features, r) * 0.02)
-
-#     def forward(self, x):
-#         return nn.functional.linear(x, self.weight + self.scale * (self.B @ self.A))
 
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(self, dim, max_len=1024):
@@ -48,22 +36,6 @@ class RotaryPositionalEmbedding(nn.Module):
         return torch.cat([x1 * cos - x2 * sin,
                           x1 * sin + x2 * cos], dim=-1)
 
-# class PositionalEncoding(nn.Module):
-#     def __init__(self, d_model, dropout=0.2, max_len=5000):
-#         super(PositionalEncoding, self).__init__()
-#         self.dropout = nn.Dropout(p=dropout)
-
-#         pe = torch.zeros(max_len, d_model)
-#         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-#         pe[:, 0::2] = torch.sin(position * div_term)
-#         pe[:, 1::2] = torch.cos(position * div_term)
-#         pe = pe.unsqueeze(0).transpose(0, 1)
-#         self.register_buffer('pe', pe)
-
-#     def forward(self, x):
-#         x = x + self.pe[:x.size(0), :]
-#         return self.dropout(x)
     
 class FeedForward(nn.Module):
     def __init__(self, d_model, d_ff):

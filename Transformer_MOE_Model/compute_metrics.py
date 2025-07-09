@@ -1,37 +1,28 @@
 import torch
 from model_components import generate_padding_mask, generate_subsequent_mask
 import sacrebleu
-# from indicnlp import common
-# from indicnlp.tokenize import indic_tokenize 
 import sentencepiece as spm
 import pandas as pd 
 from model_architecture import TransformerModel
 from model_train import load_checkpoint, get_inverse_sqrt_warmup_scheduler
 
-def apply_repetition_penalty(logits, prev_tokens, penalty):
-    """
-    Modifies logits in-place based on repetition penalty.
-    """
-    for token_id in set(prev_tokens):
-        if logits[token_id] > 0:
-            logits[token_id] /= penalty
-        else:
-            logits[token_id] *= penalty
-    return logits
 
-def beam_search_decode(model, src_tokens, beam_size=5, max_len=100, bos_id=2, eos_id=3, repetition_penalty=1.2):
+
+
+def beam_search_decode(model, src_tokens, beam_size=5, max_len=100, bos_id=2, eos_id=3, repetition_penalty=2):
     model.eval()
     device = next(model.parameters()).device
 
     src_tensor = torch.tensor([src_tokens], dtype=torch.long).to(device)
     src_mask = generate_padding_mask(src_tensor).to(device)
 
+    # Encode source once
     with torch.no_grad():
-        src_emb = model.src_embed(src_tensor)
+        src_emb = model.shared_embed(src_tensor)
         for layer in model.encoder_layers:
             src_emb = layer(src_emb, src_mask)
 
-    beams = [([bos_id], 0.0)]
+    beams = [([bos_id], 0.0)]  # (tokens, score)
     completed = []
 
     for _ in range(max_len):
@@ -54,12 +45,16 @@ def beam_search_decode(model, src_tokens, beam_size=5, max_len=100, bos_id=2, eo
                     tgt_out = layer(tgt_out, src_emb, full_mask, src_mask)
 
                 logits = model.generator(tgt_out)  # [1, T, V]
-                logits = logits[0, -1]  # (V,)
+                logits = logits[0, -1]  # [V]
 
-                # === Apply Repetition Penalty ===
-                logits = apply_repetition_penalty(logits, tokens, repetition_penalty)
+                # Apply repetition penalty
+                for tok in set(tokens):
+                    if logits[tok] < 0:
+                        logits[tok] *= repetition_penalty
+                    else:
+                        logits[tok] /= repetition_penalty
 
-                log_probs = torch.log_softmax(logits, dim=-1)  # (V,)
+                log_probs = torch.log_softmax(logits, dim=-1)
 
             top_log_probs, top_tokens = torch.topk(log_probs, beam_size)
 
@@ -77,58 +72,52 @@ def beam_search_decode(model, src_tokens, beam_size=5, max_len=100, bos_id=2, eo
     best_tokens, best_score = max(completed, key=lambda x: x[1])
     return best_tokens
 
+
+
+
 bos_id = 2  
 eos_id = 3  
-# def tokenize_mni(text: str) -> str:
-#     return " ".join(indic_tokenize.trivial_tokenize(text, "mni"))
+
 
 import evaluate
 
 if __name__ == "__main__":
    
-    # df = pd.read_csv("/export/home/vikas/MT_Work/data_file/test.csv")
-    # df = df.head(10)
-    # Replace with full paths if needed
-    # src_file = "/export/home/vikas/MT_Work/data_file/IN22_gen_test.eng_Latn.txt"
-    # tgt_file = "/export/home/vikas/MT_Work/data_file/IN22_gen_test.mni_Mtei.txt"
     
-    src_file = "/export/home/vikas/MT_Work/data_file/test.eng_Latn_conv.txt"
-    tgt_file = "/export/home/vikas/MT_Work/data_file/test.mni_Mtei_conv.txt"
+    tgt_file = "../data/test.eng_Latn_conv.txt"
+    src_file = "../data/test.mni_Mtei_conv.txt"
     
-    # Load data from .txt files
-    with open(src_file, "r", encoding="utf-8") as f:
-        src_texts = [
-        f"<2mni> {line.strip()}"
-        for line in f
-        if line.strip()
-        ]
-    with open(tgt_file, "r", encoding="utf-8") as f:
-        ref_texts = [line.strip() for line in f if line.strip()]
+    with open(src_file, "r", encoding="utf-8") as f_src, open(tgt_file, "r", encoding="utf-8") as f_tgt:
+        src_lines = f_src.readlines()
+        tgt_lines = f_tgt.readlines()
+
     
+    # Ensure source and target have the same number of lines
+    assert len(src_lines) == len(tgt_lines), f"Line count mismatch: {len(src_lines)} vs {len(tgt_lines)}"
+
+    # Strip newlines but preserve line order and count
+    src_texts = [line.strip() for line in src_lines]
+    ref_texts = [line.strip() for line in tgt_lines]
+    references = [[ref] for ref in ref_texts]    
     
-    # src_texts = df["src"].astype(str).tolist()
-    # ref_texts = df["tgt"].astype(str).tolist()
-    #references = [[ref] for ref in ref_texts]
-    #Wrap references for BLEU / chrF
-    references = [[ref] for ref in ref_texts]
     
     tokenizer= spm.SentencePieceProcessor(model_file="spm_joint.model")
     model = TransformerModel(
         src_vocab_size=20000,  # Adjust based on your SentencePiece vocab size
         tgt_vocab_size=20000,  # Adjust based on your SentencePiece vocab size
-        d_model=1024,
-        nhead=16,
-        num_encoder_layers=18,
-        num_decoder_layers=18,
-        dim_feedforward=8192,
+        d_model=256,
+        nhead=8,
+        num_encoder_layers=4,
+        num_decoder_layers=4,
+        dim_feedforward=1024,
         dropout=0.2
     ).to("cuda" if torch.cuda.is_available() else "cpu")
 
     optimizer = torch.optim.Adam(model.parameters(),  betas=(0.9, 0.98),lr=1e-4,eps=1e-9)   #before lr=1e-5
     scheduler = get_inverse_sqrt_warmup_scheduler(optimizer, warmup_steps=4000, peak_lr=1e-4, initial_lr=1e-5)   #before peak_lr=1e-3
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=0) 
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1) 
 
-    load_checkpoint(model, optimizer,scheduler, 'transformer_checkpoint_14.pth')
+    load_checkpoint(model, optimizer,scheduler, 'transformer_checkpoint_5.pth')
     model.eval()
     with torch.inference_mode():    
     # Translate
@@ -138,24 +127,39 @@ if __name__ == "__main__":
             pred_ids = beam_search_decode(model, src_ids, beam_size=5, max_len=200, bos_id=bos_id, eos_id=eos_id)
             pred_text = tokenizer.decode(pred_ids)
             preds.append(pred_text)
+            print(f"Count: {len(preds)}")
             # Save predictions to a file
-        output_file = "predictions.txt"
+        output_file = "predictions_engTo_snd.txt"
         with open(output_file, "w", encoding="utf-8") as f:
             for line in preds:
                 f.write(line.strip() + "\n")
+        
+        # ✅ Assert no mismatch
+        assert len(preds) == len(ref_texts), "Mismatch between number of predictions and references!"    
+        tokenized_pred = ["" for _ in range(len(preds))]
+        tokenized_ref = [[""] for _ in range(len(ref_texts))]            
+        for i in range(len(preds)):
+             tokens_pred = tokenizer.encode(preds[i], out_type=str, add_bos=False, add_eos=False)
+             tokens_ref = tokenizer.encode(ref_texts[i], out_type=str, add_bos=False, add_eos=False)
+
+             joined_pred = " ".join(tokens_pred)
+             joined_ref = " ".join(tokens_ref)
+             print(f"Pred: {tokenized_pred[i]}")
+             print(f"Ref: {tokenized_ref[i][0]}")
+
         # ====== Evaluation ======
 
         # BLEU
-        bleu = sacrebleu.corpus_bleu(preds, references, tokenize='none')
-        print(f"BLEU Score: {bleu.score:.2f}")
+        bleu = sacrebleu.corpus_bleu(tokenized_pred, tokenized_ref, tokenize='none')
+        print(f" {bleu.score:.2f}")
 
         # CHRF++
         chrf_calc = sacrebleu.CHRF(word_order=2)
-        chrf_score = chrf_calc.corpus_score(preds, references)
+        chrf_score = chrf_calc.corpus_score(tokenized_pred, tokenized_ref)
         print(f"CHRF++: {chrf_score}")
 
         # chrF
-        chrf = sacrebleu.corpus_chrf(preds, references)
+        chrf = sacrebleu.corpus_chrf(tokenized_pred, tokenized_ref)
         print(f"chrF Score: {chrf.score:.2f}")
 
         # METEOR
@@ -188,8 +192,8 @@ if __name__ == "__main__":
         try:
             bertscore = evaluate.load("bertscore")
             bertscore_result = bertscore.compute(predictions=preds, references=ref_texts, lang="en")
-            print(f"BERTScore (F1): {sum(bertscore_result['f1'])/len(bertscore_result['f1']):.4f}")
+            print(f"(F1): {sum(bertscore_result['f1'])/len(bertscore_result['f1']):.4f}")
         except Exception as e:
-            print(f"BERTScore error: {e}")
+            print(f" BERTScore error: {e}")
 
 

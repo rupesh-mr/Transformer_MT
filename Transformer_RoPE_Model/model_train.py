@@ -2,19 +2,65 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
+import sentencepiece as spm
+import sacrebleu
+import evaluate
+from model_components import generate_padding_mask, generate_subsequent_mask
+import pandas as pd
+import os
 
-def compute_rdrop_loss(model, src, tgt_input, tgt_output, src_mask, tgt_mask, alpha=5.0, ignore_index=0):
+
+def greedy_decode(model, src_tokens, max_len=200, bos_id=2, eos_id=3, repetition_penalty=2):
+    model.eval()
+    device = next(model.parameters()).device
+
+    src_tensor = torch.tensor([src_tokens], dtype=torch.long).to(device)
+    src_mask = generate_padding_mask(src_tensor).to(device)
+
+    with torch.no_grad():
+        src_emb = model.shared_embed(src_tensor)
+        for layer in model.encoder_layers:
+            src_emb = layer(src_emb, src_mask)
+
+    tokens = [bos_id]
+
+    for _ in range(max_len):
+        tgt_tensor = torch.tensor([tokens], dtype=torch.long).to(device)
+        tgt_mask = generate_padding_mask(tgt_tensor).to(device).expand(-1, -1, tgt_tensor.size(1), -1)
+        causal = generate_subsequent_mask(tgt_tensor.size(1)).to(device).unsqueeze(0).unsqueeze(0)
+        full_mask = tgt_mask & (~causal)
+
+        with torch.no_grad():
+            tgt_emb = model.shared_embed(tgt_tensor)
+            tgt_out = tgt_emb
+            for layer in model.decoder_layers:
+                tgt_out = layer(tgt_out, src_emb, full_mask, src_mask)
+
+            logits = model.generator(tgt_out)[0, -1]  # [V]
+
+            # Apply repetition penalty
+            for tok in set(tokens):
+                if logits[tok] < 0:
+                    logits[tok] *= repetition_penalty
+                else:
+                    logits[tok] /= repetition_penalty
+
+            next_token = torch.argmax(torch.log_softmax(logits, dim=-1)).item()
+
+        tokens.append(next_token)
+
+        if next_token == eos_id:
+            break
+
+    return tokens
+
+def compute_rdrop_loss(model, src, tgt_input, tgt_output, src_mask, tgt_mask,step, alpha=1.0, ignore_index=0):
     # Forward pass twice with different dropout masks
     logits_1 = model(src, tgt_input, src_mask=src_mask, tgt_mask=tgt_mask)  # (B, T, V)
     logits_2 = model(src, tgt_input, src_mask=src_mask, tgt_mask=tgt_mask)
 
-    # Flatten for CE loss
-    # B, T, V = logits_1.size()
-    # logits_1_flat = logits_1.reshape(B * T, V)
-    # logits_2_flat = logits_2.reshape(B * T, V)
-    # tgt_output_flat = tgt_output.reshape(B * T)
-    
-    B, T, V = logits_1.size()       # changes 1 vikas has done as per the previous file
+
+    B, T, V = logits_1.size()       
     logits_1_flat = logits_1.view(B * T, V)
     logits_2_flat = logits_2.view(B * T, V)
     #tgt_output_flat = tgt_output.view(B * T)
@@ -28,17 +74,12 @@ def compute_rdrop_loss(model, src, tgt_input, tgt_output, src_mask, tgt_mask, al
     # Compute KL divergence only on non-pad positions
     log_probs_1 = F.log_softmax(logits_1, dim=-1)  # (B, T, V)
     log_probs_2 = F.log_softmax(logits_2, dim=-1)
-    #probs_1 = F.softmax(logits_1, dim=-1)
-    #probs_2 = F.softmax(logits_2, dim=-1)
-    
-    
 
     # Per-token KL divergence (B, T)
     
     kl_1 = F.kl_div(log_probs_1, log_probs_2, reduction='none', log_target=True).sum(-1)
     kl_2 = F.kl_div(log_probs_2, log_probs_1, reduction='none', log_target=True).sum(-1)
-    #kl_1 = F.kl_div(log_probs_1, probs_2, reduction='none').sum(-1)  # (B, T)
-    #kl_2 = F.kl_div(log_probs_2, probs_1, reduction='none').sum(-1)
+    
 
     # Mask out padding
     non_pad_mask = (tgt_output != ignore_index).float()  # (B, T)
@@ -55,7 +96,7 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
         model.train()
         print(f"Epoch {epoch}/{start_epoch+epochs}")
         with open('training_log.txt', 'a') as log:
-                log.write(f"Epoch {epoch}/{start_epoch+epochs}\n")
+                log.write(f"Epoch {epoch}/{epochs}\n")
         epoch_start_time = time.time()
         batch_times = []
         total_loss=0
@@ -70,19 +111,8 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
             src_mask   = src_mask.to(device)
             tgt_mask   = tgt_mask.to(device)
 
-            #logits = model(src, tgt_input, src_mask=src_mask, tgt_mask=tgt_mask)
-            #B, Tm1, V = logits.size()
-            # assert tgt_output.min() >= 0 and tgt_output.max() < V, (
-            #     f"Target out of range: got [{tgt_output.min()}, {tgt_output.max()}], "
-            #     f"but vocab size is {V}"
-            # )
-
-
-            # with torch.no_grad():
-            #     lmin, lmax = logits.min().item(), logits.max().item()
-            #     assert torch.isfinite(logits).all(), f"Non-finite logits detected: [{lmin}, {lmax}]"
             # Compute loss with R-Drop
-            loss = compute_rdrop_loss(model, src, tgt_input,tgt_output, src_mask, tgt_mask, alpha=5.0)
+            loss = compute_rdrop_loss(model, src, tgt_input,tgt_output, src_mask, tgt_mask,i, alpha=5.0)
             # Backprop
             optimizer.zero_grad()
             # torch.autograd.set_detect_anomaly(True)
@@ -91,7 +121,7 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
             optimizer.step()
             scheduler.step()
             
-            print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}") #here i put according to previous
+            print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}") 
             
             batch_end = time.time()
             batch_time = batch_end - batch_start
@@ -113,33 +143,23 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
         with open('training_log.txt', 'a') as log:
             log.write(f"Epoch {epoch} completed in {epoch_duration:.2f}s - Last Loss: {loss.item():.4f} - Average Loss: {total_loss / total_batches:.4f}\n\n")
 
-        if checkpoint_path:
-            import os
-            dir=os.path.dirname(checkpoint_path+"")
-            if dir:
-             os.makedirs(dir, exist_ok=True)
+        ckpt_file = checkpoint_path + '_' + str(epoch) + '.pth'
+        try:
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'loss': loss.item()
-            }, checkpoint_path+'_'+str(epoch)+'.pth')
-            print(f"Checkpoint saved to {checkpoint_path+'_'+str(epoch)+'.pth'}")
+            }, ckpt_file)
+            print(f"✅ Checkpoint saved to {ckpt_file}")
+        except Exception as e:
+            print(f"❌ torch.save failed: {e}")
 
-        #if checkpoint_path:
-            #import os
-            #dir=os.path.dirname(checkpoint_path+"")
-            #if dir:
-             #os.makedirs(dir, exist_ok=True)
-            #torch.save({
-               # 'epoch': epoch,
-               # 'model_state_dict': model.state_dict(),
-              #  'optimizer_state_dict': optimizer.state_dict(),
-              #  'scheduler_state_dict': scheduler.state_dict(),
-             #   'loss': loss.item()
-            #}, checkpoint_path + '_' + str(epoch) +' .pth')
-          # print(f"Checkpoint saved to {checkpoint_path + '_' + str(epoch)+ '.pth'}")
+        if not os.path.exists(ckpt_file):
+            print(f"❌ File {ckpt_file} does not exist even after save!")
+        
+
         # Validation
         model.eval()
         total_valid_loss = 0
@@ -162,9 +182,91 @@ def train_model(model, dataloader,valid_dataloader, optimizer,scheduler, criteri
         print(f"Validation Loss after Epoch {epoch}: {avg_valid_loss:.4f}") #this uncomment
         with open('validation_log.txt', 'a') as log:
             log.write(f"Validation Loss after Epoch {epoch}: {avg_valid_loss:.4f}\n")
-            # log.write(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}\n") #this extra chnages
             
-        print(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}") # extra put
+        print(f"Epoch {epoch}/{epochs}, Valid Loss: {avg_valid_loss:.4f}") # extra put    
+        # Ensure source and target have the same number of lines
+        df_dev=pd.read_csv("dev.csv")
+        src_texts = df_dev['tgt'].tolist()
+        ref_texts = df_dev['src'].tolist()
+        #Wrap references for BLEU / chrf
+        references = [[ref] for ref in ref_texts]    
+        
+        
+        tokenizer= spm.SentencePieceProcessor(model_file="spm_joint.model")
+        model.eval()
+        with torch.inference_mode():    
+            # Translate
+            preds = []
+            for src in src_texts:
+                src_ids = tokenizer.encode(src,add_bos=True, add_eos=True)
+                pred_ids = greedy_decode(model, src_ids, max_len=200, bos_id=2, eos_id=3)
+                pred_text = tokenizer.decode(pred_ids)
+                preds.append(pred_text)
+                # Save predictions to a file
+            output_file = "predictions_mni_eng.txt"
+            with open(output_file, "w", encoding="utf-8") as f:
+                for line in preds:
+                    f.write(line.strip() + "\n")
+                    
+            # ✅ Assert no mismatch
+            assert len(preds) == len(ref_texts), "Mismatch between number of predictions and references!"    
+            tokenized_pred = ["" for _ in range(len(preds))]
+            tokenized_ref = [[""] for _ in range(len(ref_texts))]            
+            for i in range(len(preds)):
+                tokens_pred = tokenizer.encode(preds[i], out_type=str, add_bos=False, add_eos=False)
+                tokens_ref = tokenizer.encode(ref_texts[i], out_type=str, add_bos=False, add_eos=False)
+
+                tokenized_pred[i] = " ".join(tokens_pred)
+                tokenized_ref[i] = [" ".join(tokens_ref)]
+            # ====== Evaluation ======
+
+            # BLEU
+            bleu = sacrebleu.corpus_bleu(tokenized_pred, tokenized_ref, tokenize='none')
+            print(f"BLEU Score: {bleu.score:.2f}")
+
+            # CHRF++
+            chrf_calc = sacrebleu.CHRF(word_order=2)
+            chrf_score = chrf_calc.corpus_score(tokenized_pred, tokenized_ref)
+            print(f"CHRF++: {chrf_score}")
+
+            # chrF
+            chrf = sacrebleu.corpus_chrf(tokenized_pred, tokenized_ref)
+            print(f"chrF Score: {chrf.score:.2f}")
+
+            # METEOR
+            meteor = evaluate.load("meteor")
+            meteor_result = meteor.compute(predictions=preds, references=ref_texts)
+            print(f"METEOR Score: {meteor_result['meteor']:.2f}")
+            
+            print("=== Advanced Evaluation ===")
+
+            # ==============================
+            # COMET
+            # ==============================
+            print("\n--- COMET Score ---")
+            try:
+                comet = evaluate.load("comet")
+                comet_result = comet.compute(
+                    predictions=preds, 
+                    references=ref_texts, 
+                    sources=src_texts
+                )
+                print(f"COMET Score: {comet_result['mean_score']:.4f}")
+            except Exception as e:
+                print(f"COMET error: {e}")
+            
+                
+            # ==============================
+            # BERTScore
+            # ==============================
+            print("\n--- BERTScore ---")
+            try:
+                bertscore = evaluate.load("bertscore")
+                bertscore_result = bertscore.compute(predictions=preds, references=ref_texts, lang="en")
+                print(f"BERTScore (F1): {sum(bertscore_result['f1'])/len(bertscore_result['f1']):.4f}")
+            except Exception as e:
+                print(f"BERTScore error: {e}")
+
 # Function to load checkpoint
 def load_checkpoint(model, optimizer,scheduler, checkpoint_path):
     checkpoint = torch.load(checkpoint_path)

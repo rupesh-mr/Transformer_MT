@@ -45,34 +45,3 @@ def train_sentencepiece(input_file, model_prefix, vocab_size=8000):
         eos_id=3,
         user_defined_symbols=["<2mni>", "<2en>"],
     )
-# if __name__ == "__main__":
-    # from pathlib import Path
-    # import random
-    # from datasets import load_dataset
-
-    # Load the full IndicCorp v2 config
-    # ds = load_dataset("ai4bharat/IndicCorpV2", split="mni_Mtei", name="indiccorp_v2")
-
-    # Local download path for all .txt files
-    # data_dir = Path(ds.cache_files[0]['filename']).parent / "data"
-
-    # Confirm available language files
-    # print("Languages present:", sorted([f.name for f in data_dir.glob("*.txt")]))
-
-    # Read sentences
-    # en_lines = data_dir / "en.txt"
-    # mni_lines = data_dir / "mni.txt"
-
-    # def load_and_sample(file_path, n=3_000_000, seed=42):
-    #    lines = file_path.read_text(encoding="utf-8").splitlines()
-     #   random.seed(seed)
-      #  return random.sample(lines, min(n, len(lines)))
-
-    #en_sents = load_and_sample(en_lines)
-    #mni_sents = load_and_sample(mni_lines)
-
-    # Save to training files
-    #(Path.cwd() / "train.en.txt").write_text("\n".join(en_sents), encoding="utf-8")
-    #(Path.cwd() / "train.mni.txt").write_text("\n".join(mni_sents), encoding="utf-8")
-
-    #print(f"Saved {len(en_sents)} English and {len(mni_sents)} Meitei sentences.")

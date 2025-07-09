@@ -8,7 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 class TranslationDataset(Dataset):
     def __init__(self, csv_file, sp_model, src_col, tgt_col,isvalid=False,max_len=128, cache_file='tokenized_dataset.pt'):  #made the chnages here with max len 256 to 128 and put isvalid=False also
             self.cache_file = cache_file
-            self.max_len = max_len    
+            self.max_len = max_len     
 
             if os.path.exists(cache_file):
                 print(f"Loading tokenized dataset from {cache_file}...")
@@ -17,7 +17,6 @@ class TranslationDataset(Dataset):
             else:
                 print("Pre-tokenizing dataset...")
                 self.data = pd.read_csv(csv_file)
-                # self.data = self.data.loc[:900]
                 self.tokenizer = spm.SentencePieceProcessor(model_file=sp_model)
                 self.encoded_data = []
 
