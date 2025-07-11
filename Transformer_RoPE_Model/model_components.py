@@ -65,7 +65,7 @@ class MultiHeadAttention_RoPE(nn.Module):
         self.dropout = nn.Dropout(0.2)
         self.rotary_pe = RotaryPositionalEmbedding(dim=self.d_k, max_len=1024)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None,return_weights=False):
         B, L, D = query.size()
 
         def transform(x, linear):
@@ -91,7 +91,12 @@ class MultiHeadAttention_RoPE(nn.Module):
         attn = self.dropout(torch.softmax(scores, dim=-1))
         context = attn @ V  # (B, nhead, L_query, d_k)
         context = context.transpose(1, 2).contiguous().view(B, L, D)
-        return self.out_proj(context)
+        out=self.out_proj(context)
+
+        if return_weights:
+            return out, attn  # attn shape: (B, nhead, L, L)
+        else:
+            return out
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, nhead):
@@ -109,7 +114,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(0.2)
         # self.rotary_pe = RotaryPositionalEmbedding(dim=self.d_k, max_len=1024)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None,return_weights=False):
         B, L, D = query.size()
 
         def transform(x, linear):
@@ -135,7 +140,12 @@ class MultiHeadAttention(nn.Module):
         attn = self.dropout(torch.softmax(scores, dim=-1))
         context = attn @ V  # (B, nhead, L_query, d_k)
         context = context.transpose(1, 2).contiguous().view(B, L, D)
-        return self.out_proj(context)
+        out=self.out_proj(context)
+
+        if return_weights:
+            return out, attn  # attn shape: (B, nhead, L, L)
+        else:
+            return out
 
 
 
@@ -149,10 +159,16 @@ class EncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(0.2)
 
-    def forward(self, x, mask):
-        x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), mask))
-        x = x + self.dropout(self.ffn(self.norm2(x)))
-        return x
+    def forward(self, x, mask, return_attn=False):
+        if return_attn:
+            sa_out, attn = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), mask, return_weights=True)
+            x = x + self.dropout(sa_out)
+            x = x + self.dropout(self.ffn(self.norm2(x)))
+            return x, attn
+        else:
+            x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), mask))
+            x = x + self.dropout(self.ffn(self.norm2(x)))
+            return x
 
 
 class DecoderLayer(nn.Module):
@@ -166,12 +182,21 @@ class DecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(0.2)
 
-    def forward(self, x, mem, tgt_mask, mem_mask):
-        x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), tgt_mask))
-        x = x + self.dropout(self.cross_attn(self.norm2(x), mem, mem, mem_mask))
-        x = x + self.dropout(self.ffn(self.norm3(x)))
-        return x
+    def forward(self, x, mem, tgt_mask, mem_mask, return_attn=False):
+        if return_attn:
+            sa_out, self_attn = self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), tgt_mask, return_weights=True)
+            x = x + self.dropout(sa_out)
 
+            ca_out, cross_attn = self.cross_attn(self.norm2(x), mem, mem, mem_mask, return_weights=True)
+            x = x + self.dropout(ca_out)
+
+            x = x + self.dropout(self.ffn(self.norm3(x)))
+            return x, self_attn, cross_attn
+        else:
+            x = x + self.dropout(self.self_attn(self.norm1(x), self.norm1(x), self.norm1(x), tgt_mask))
+            x = x + self.dropout(self.cross_attn(self.norm2(x), mem, mem, mem_mask))
+            x = x + self.dropout(self.ffn(self.norm3(x)))
+            return x
 # Mask helper functions
 def generate_padding_mask(seq):
     # seq shape: (B, L)
