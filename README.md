@@ -11,6 +11,13 @@ This repository contains three versions of a custom Transformer architecture bui
    - Integrates Rotary Positional Embedding (RoPE) into the attention mechanism.
 3. **Transformer with MoE**  
    - Adds Mixture-of-Experts (MoE) layers for conditional computation and scalability.
+   - ✅ Supports **multiple MoE routing strategies** in encoder and decoder:
+     - MoE in **odd** layers
+     - MoE in **even** layers
+     - MoE in **first half** of the layers
+     - MoE in **second half** of the layers  
+   - You can select one of these variants by modifying the final argument in the `build_encoder_layers(...)` and `build_decoder_layers(...)` functions inside `model_architecture.py` (typically a lambda like `moe_odd`, `moe_even`, etc.).
+
 
 Each version is organized in its own folder with dedicated training and evaluation scripts.
 
